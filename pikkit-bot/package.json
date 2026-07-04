@@ -8,6 +8,7 @@
     "verify": "tsx src/auth/verify.ts",
     "start": "tsx src/main.ts",
     "debug": "tsx src/debug/fetchAndParse.ts",
+    "diagnose-headers": "tsx src/debug/diagnoseHeaders.ts",
     "test": "tsx --test src/**/*.test.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
