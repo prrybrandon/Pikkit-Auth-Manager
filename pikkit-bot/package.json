@@ -6,6 +6,7 @@
   "scripts": {
     "login": "tsx src/auth/login.ts",
     "verify": "tsx src/auth/verify.ts",
+    "start": "tsx src/main.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

@@ -39,3 +39,9 @@ export function isHeadless(defaultValue: boolean): boolean {
   if (raw === undefined) return defaultValue;
   return raw.toLowerCase() === "true";
 }
+
+/**
+ * Base host for Pikkit's data API (separate from the app.pikkit.com
+ * front-end used for login). All API module requests go through here.
+ */
+export const PIKKIT_API_BASE_URL = "https://prod-website.pikkit.app";
