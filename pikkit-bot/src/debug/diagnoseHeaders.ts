@@ -2,17 +2,20 @@
  * TEMPORARY diagnostic script — not part of the production pipeline.
  *
  * Launches a real (headed by default) browser using the saved session,
- * navigates to Home, dismisses the mobile-sync modal, navigates directly
- * to /events (no sidebar click), and waits for /events/all to complete.
+ * navigates directly to https://app.pikkit.com/events, waits for
+ * /events/all to complete, then waits an additional 5 seconds for React
+ * to finish hydrating/rendering.
  *
- * Instead of guessing event-card selectors and clicking, this script now
- * performs DOM inspection: it saves the full rendered page HTML and dumps
- * every visible, interactive-looking element (tag/class/id/role/href/
- * aria-label/text) so the real selectors can be determined by inspection
- * rather than trial and error.
+ * Its only purpose is to inspect what React actually rendered into the
+ * live DOM (the previously-saved events.html only captured the initial
+ * React shell, before hydration mounted any event cards). It does NOT
+ * click anything and does NOT guess selectors — it dumps raw signal
+ * (rendered HTML, visible text, element counts, keyword matches, and
+ * elements with interaction-like attributes) so the real markup can be
+ * inspected directly.
  *
  * Does not modify any existing auth/API code. Safe to delete once the
- * selectors are found.
+ * real markup has been identified.
  *
  *   pnpm --filter @workspace/pikkit-bot run diagnose-headers
  *
@@ -27,21 +30,29 @@ import { PIKKIT_HOME_URL, SESSION_FILE, isHeadless } from "../config.js";
 
 const EVENTS_ALL_URL_SUBSTRING = "/events/all";
 
-const SEARCH_STRINGS = ["MLB", "NBA", "NFL", "WNBA", "Moneyline", "Spread", "Over", "Under"];
-
-const CLASS_KEYWORDS = ["event", "match", "game", "card", "tile", "bet", "row"];
+const KEYWORDS = ["MLB", "NBA", "NFL", "Moneyline", "Spread", "Over", "Under"];
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, "..", "..");
 const DEBUG_DIR = path.join(projectRoot, "debug");
 
-interface DiscoveredElement {
+interface InteractiveElement {
   tag: string;
   className: string;
   id: string;
   role: string;
   href: string;
-  ariaLabel: string;
+  dataTestId: string;
+  onclick: boolean;
+  cursorPointer: boolean;
+  text: string;
+}
+
+interface KeywordMatch {
+  keyword: string;
+  tag: string;
+  className: string;
+  id: string;
   text: string;
 }
 
@@ -90,111 +101,95 @@ async function closeSyncModalIfPresent(page: Page): Promise<void> {
   console.log(`No sync modal present (attempted selectors: ${attempted.join(", ")}).`);
 }
 
-async function inspectDom(page: Page): Promise<DiscoveredElement[]> {
+async function getBasicDomStats(
+  page: Page,
+): Promise<{ innerHtmlLength: number; innerText: string; elementCount: number }> {
   return page.evaluate(() => {
-    const INTERACTIVE_TAGS = new Set([
-      "a",
-      "button",
-      "div",
-      "li",
-      "article",
-      "section",
-      "span",
-      "tr",
-      "td",
-    ]);
+    const doc = (globalThis as any).document;
+    return {
+      innerHtmlLength: doc.body.innerHTML.length,
+      innerText: doc.body.innerText,
+      elementCount: doc.querySelectorAll("*").length,
+    };
+  });
+}
 
+async function findKeywordMatches(page: Page, keywords: string[]): Promise<KeywordMatch[]> {
+  return page.evaluate((keywordList: string[]) => {
+    const doc = (globalThis as any).document;
+    const allElements: any[] = Array.from(doc.querySelectorAll("body *"));
+    const matches: {
+      keyword: string;
+      tag: string;
+      className: string;
+      id: string;
+      text: string;
+    }[] = [];
+
+    for (const el of allElements) {
+      const text = (el.textContent ?? "").trim().replace(/\s+/g, " ");
+      if (!text) continue;
+
+      for (const keyword of keywordList) {
+        if (text.includes(keyword)) {
+          matches.push({
+            keyword,
+            tag: el.tagName.toLowerCase(),
+            className: typeof el.className === "string" ? el.className : "",
+            id: el.id ?? "",
+            text: text.slice(0, 120),
+          });
+        }
+      }
+    }
+
+    return matches;
+  }, keywords);
+}
+
+async function findInteractiveLookingElements(page: Page): Promise<InteractiveElement[]> {
+  return page.evaluate(() => {
     const doc = (globalThis as any).document;
     const win = (globalThis as any).window;
-
-    function isVisible(el: any): boolean {
-      const style = win.getComputedStyle(el);
-      if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0") {
-        return false;
-      }
-      const rect = el.getBoundingClientRect();
-      return rect.width > 0 && rect.height > 0;
-    }
-
-    function looksInteractive(el: any): boolean {
-      const tag = el.tagName.toLowerCase();
-      if (tag === "a" || tag === "button") return true;
-      const role = el.getAttribute("role");
-      if (role && ["button", "link", "listitem", "row", "option", "tab"].includes(role)) {
-        return true;
-      }
-      const style = win.getComputedStyle(el);
-      if (style.cursor === "pointer") return true;
-      if (el.hasAttribute("onclick")) return true;
-      if (el.hasAttribute("href")) return true;
-      if (INTERACTIVE_TAGS.has(tag)) return true;
-      return false;
-    }
-
+    const allElements: any[] = Array.from(doc.querySelectorAll("body *"));
     const results: {
       tag: string;
       className: string;
       id: string;
       role: string;
       href: string;
-      ariaLabel: string;
+      dataTestId: string;
+      onclick: boolean;
+      cursorPointer: boolean;
       text: string;
     }[] = [];
 
-    const allElements: any[] = Array.from(doc.querySelectorAll("body *"));
-
     for (const el of allElements) {
-      const text = (el.textContent ?? "").trim().replace(/\s+/g, " ");
+      const hasOnclick = el.hasAttribute("onclick") || typeof el.onclick === "function";
+      const role = el.getAttribute("role") ?? "";
       const href = el.getAttribute("href") ?? "";
+      const dataTestId = el.getAttribute("data-testid") ?? "";
+      const cursorPointer = win.getComputedStyle(el).cursor === "pointer";
 
-      if (!text && !href) continue;
-      if (!isVisible(el)) continue;
-      if (!looksInteractive(el)) continue;
+      if (!hasOnclick && !role && !href && !dataTestId && !cursorPointer) continue;
+
+      const text = (el.textContent ?? "").trim().replace(/\s+/g, " ");
 
       results.push({
         tag: el.tagName.toLowerCase(),
         className: typeof el.className === "string" ? el.className : "",
         id: el.id ?? "",
-        role: el.getAttribute("role") ?? "",
+        role,
         href,
-        ariaLabel: el.getAttribute("aria-label") ?? "",
+        dataTestId,
+        onclick: hasOnclick,
+        cursorPointer,
         text: text.slice(0, 80),
       });
     }
 
     return results;
   });
-}
-
-async function collectClassNamesWithKeywords(page: Page, keywords: string[]): Promise<string[]> {
-  return page.evaluate((keywordList: string[]) => {
-    const doc = (globalThis as any).document;
-    const found = new Set<string>();
-    const allElements: any[] = Array.from(doc.querySelectorAll("body *"));
-
-    for (const el of allElements) {
-      const className = typeof el.className === "string" ? el.className : "";
-      if (!className) continue;
-      for (const cls of className.split(/\s+/)) {
-        if (!cls) continue;
-        const lower = cls.toLowerCase();
-        if (keywordList.some((keyword) => lower.includes(keyword))) {
-          found.add(cls);
-        }
-      }
-    }
-
-    return Array.from(found).sort();
-  }, keywords);
-}
-
-async function searchPageTextFor(page: Page, needles: string[]): Promise<Record<string, boolean>> {
-  const bodyText = await page.evaluate(() => (globalThis as any).document.body.innerText ?? "");
-  const results: Record<string, boolean> = {};
-  for (const needle of needles) {
-    results[needle] = bodyText.includes(needle);
-  }
-  return results;
 }
 
 async function main(): Promise<void> {
@@ -237,25 +232,52 @@ async function main(): Promise<void> {
 
   await closeSyncModalIfPresent(page);
 
-  console.log("Waiting 3 seconds for React to fully render...");
-  await page.waitForTimeout(3000);
+  console.log("Waiting 5 seconds for React to finish rendering...");
+  await page.waitForTimeout(5000);
+
+  const stats = await getBasicDomStats(page);
+  console.log(`\ndocument.body.innerHTML.length: ${stats.innerHtmlLength}`);
+  console.log(`document.querySelectorAll("*").length: ${stats.elementCount}`);
 
   fs.mkdirSync(DEBUG_DIR, { recursive: true });
-  const htmlPath = path.join(DEBUG_DIR, "events.html");
-  await fs.promises.writeFile(htmlPath, await page.content(), "utf8");
-  console.log("Saved page HTML to debug/events.html");
 
-  console.log("\nInspecting DOM for visible, interactive-looking elements...");
-  const elements = await inspectDom(page);
-  console.log(`Discovered ${elements.length} candidate elements.`);
+  const liveDomPath = path.join(DEBUG_DIR, "live-dom.html");
+  await fs.promises.writeFile(liveDomPath, await page.content(), "utf8");
+  console.log(`Saved live DOM HTML to debug/live-dom.html`);
 
-  const toPrint = elements.slice(0, 200);
+  const liveTextPath = path.join(DEBUG_DIR, "live-text.txt");
+  await fs.promises.writeFile(liveTextPath, stats.innerText, "utf8");
+  console.log(`Saved live body innerText to debug/live-text.txt`);
+
+  console.log("\nSearching rendered DOM for keyword matches (MLB, NBA, NFL, Moneyline, Spread, Over, Under)...");
+  const keywordMatches = await findKeywordMatches(page, KEYWORDS);
+  if (keywordMatches.length === 0) {
+    console.log("  (no elements found containing any of the keywords)");
+  } else {
+    console.log(`  Found ${keywordMatches.length} matching elements:\n`);
+    keywordMatches.forEach((match, index) => {
+      console.log(`[keyword match ${index}] "${match.keyword}"`);
+      console.log(`  tag: ${match.tag}`);
+      console.log(`  class: ${match.className}`);
+      console.log(`  id: ${match.id}`);
+      console.log(`  text: ${match.text}`);
+      console.log("");
+    });
+  }
+
+  console.log(
+    "\nCollecting elements with onclick / role / href / cursor:pointer / data-testid...",
+  );
+  const interactiveElements = await findInteractiveLookingElements(page);
+  console.log(`Discovered ${interactiveElements.length} such elements.`);
+
+  const toPrint = interactiveElements.slice(0, 300);
   if (toPrint.length === 0) {
     console.log(
-      "No interactive elements were found. Inspect debug/events.html directly to determine selectors.",
+      "  (none found — inspect debug/live-dom.html directly to determine what React rendered)",
     );
   } else {
-    console.log(`\nPrinting first ${toPrint.length} discovered elements:\n`);
+    console.log(`\nPrinting first ${toPrint.length} elements:\n`);
     toPrint.forEach((el, index) => {
       console.log(`[${index}]`);
       console.log(`tag: ${el.tag}`);
@@ -263,26 +285,12 @@ async function main(): Promise<void> {
       console.log(`id: ${el.id}`);
       console.log(`role: ${el.role}`);
       console.log(`href: ${el.href}`);
-      console.log(`aria-label: ${el.ariaLabel}`);
+      console.log(`data-testid: ${el.dataTestId}`);
+      console.log(`onclick: ${el.onclick}`);
+      console.log(`cursor:pointer: ${el.cursorPointer}`);
       console.log(`text: ${el.text}`);
       console.log("");
     });
-  }
-
-  console.log("\nUnique class names matching keywords (event, match, game, card, tile, bet, row):");
-  const matchingClassNames = await collectClassNamesWithKeywords(page, CLASS_KEYWORDS);
-  if (matchingClassNames.length === 0) {
-    console.log("  (none found)");
-  } else {
-    for (const className of matchingClassNames) {
-      console.log(`  - ${className}`);
-    }
-  }
-
-  console.log("\nSearching page text for known strings:");
-  const searchResults = await searchPageTextFor(page, SEARCH_STRINGS);
-  for (const [needle, found] of Object.entries(searchResults)) {
-    console.log(`  ${needle}: ${found ? "found" : "not found"}`);
   }
 
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
