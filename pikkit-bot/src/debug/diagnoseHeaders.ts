@@ -56,20 +56,28 @@ async function closeSyncModalIfPresent(page: Page): Promise<void> {
     'button[aria-label="Close" i]',
   ];
 
+  const attempted: string[] = [];
+
   for (const selector of candidateSelectors) {
+    attempted.push(selector);
     const locator = page.locator(selector).first();
     const isVisible = await locator.isVisible().catch(() => false);
-    if (!isVisible) continue;
+    if (!isVisible) {
+      console.log(`Modal selector not found: ${selector}`);
+      continue;
+    }
 
     if (selector.startsWith("text=")) {
-      const closeButton = page
-        .locator('[role="dialog"] button[aria-label="Close" i], [role="dialog"] button:has-text("×")')
-        .first();
+      const closeButtonSelector =
+        '[role="dialog"] button[aria-label="Close" i], [role="dialog"] button:has-text("×")';
+      attempted.push(closeButtonSelector);
+      const closeButton = page.locator(closeButtonSelector).first();
       if (await closeButton.isVisible().catch(() => false)) {
         await closeButton.click();
         console.log("Closed sync modal.");
         return;
       }
+      console.log(`Modal text matched but close button not found via: ${closeButtonSelector}`);
       continue;
     }
 
@@ -77,6 +85,11 @@ async function closeSyncModalIfPresent(page: Page): Promise<void> {
     console.log("Closed sync modal.");
     return;
   }
+
+  // No modal was found at all — this is expected on most calls to this
+  // function (it's called defensively at several points), so this is
+  // informational, not an error.
+  console.log(`No sync modal present (attempted selectors: ${attempted.join(", ")}).`);
 }
 
 async function clickEventsSidebarItem(page: Page): Promise<void> {
@@ -90,18 +103,24 @@ async function clickEventsSidebarItem(page: Page): Promise<void> {
     'button:has-text("Events")',
   ];
 
+  const attempted: string[] = [];
+
   for (const selector of candidateSelectors) {
+    attempted.push(selector);
     const locator = page.locator(selector).first();
     if (await locator.isVisible().catch(() => false)) {
+      console.log(`Found "Events" sidebar item via selector: ${selector}`);
       await locator.click();
       console.log("Clicked Events.");
       return;
     }
+    console.log(`Selector failed for "Events" sidebar item: ${selector}`);
   }
 
   throw new Error(
-    'Could not find an "Events" sidebar item to click with any of the known selectors. ' +
-      "Inspect the real sidebar markup and update clickEventsSidebarItem() in this script.",
+    'Could not find an "Events" sidebar item to click. All attempted selectors failed:\n' +
+      attempted.map((selector) => `  - ${selector}`).join("\n") +
+      "\nInspect the real sidebar markup and update clickEventsSidebarItem() in this script.",
   );
 }
 
@@ -115,18 +134,24 @@ async function clickFirstEventCard(page: Page): Promise<void> {
     'main li',
   ];
 
+  const attempted: string[] = [];
+
   for (const selector of candidateSelectors) {
+    attempted.push(selector);
     const locator = page.locator(selector).first();
     if (await locator.isVisible().catch(() => false)) {
+      console.log(`Found first event card via selector: ${selector}`);
       await locator.click();
       console.log("Clicked first event.");
       return;
     }
+    console.log(`Selector failed for event card: ${selector}`);
   }
 
   throw new Error(
-    "Could not find any event card to click with any of the known selectors. " +
-      "Inspect the real Events page markup and update clickFirstEventCard() in this script.",
+    "Could not find any event card to click. All attempted selectors failed:\n" +
+      attempted.map((selector) => `  - ${selector}`).join("\n") +
+      "\nInspect the real Events page markup and update clickFirstEventCard() in this script.",
   );
 }
 
@@ -138,6 +163,7 @@ async function main(): Promise<void> {
   }
 
   const browser = await chromium.launch({ headless: isHeadless(false) });
+  console.log("Opened browser.");
   const context = await browser.newContext({ storageState: SESSION_FILE });
   const page = await context.newPage();
 
@@ -186,7 +212,7 @@ async function main(): Promise<void> {
 
   console.log(`Navigating to ${PIKKIT_HOME_URL} ...`);
   await page.goto(PIKKIT_HOME_URL, { waitUntil: "load" });
-  console.log("Page fully loaded.");
+  console.log("Loaded Pikkit.");
 
   await page.waitForTimeout(1500);
   await closeSyncModalIfPresent(page);
@@ -203,7 +229,7 @@ async function main(): Promise<void> {
 
   await clickFirstEventCard(page);
 
-  console.log("Listening for network requests (no timeout)...");
+  console.log("Waiting for /event/foryou request...");
   while (!matched) {
     await page.waitForTimeout(500);
   }
