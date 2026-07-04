@@ -22,15 +22,21 @@ _Replace the heading above with the project's name, and this line with one sente
 
 ## Where things live
 
-_Populate as you build — short repo map plus pointers to the source-of-truth file for DB schema, API contracts, theme files, etc._
+- `pikkit-bot/` — standalone Playwright automation package for the Pikkit trading bot (separate from the web artifacts under `artifacts/`)
+  - `src/config.ts` — shared URLs, session file path, headless toggle
+  - `src/auth/login.ts` — one-time manual login (headed browser), saves session to `sessions/pikkit.json`
+  - `src/auth/verify.ts` — reuses the saved session (headless), confirms it's still valid
+  - `sessions/pikkit.json` — saved Playwright storage state (gitignored, contains live session cookies — never commit)
 
 ## Architecture decisions
 
-_Populate as you build — non-obvious choices a reader couldn't infer from the code (3-5 bullets)._
+- Pikkit automation lives in its own workspace package (`pikkit-bot`), not inside an `artifacts/*` web app — it has no UI/preview, it's a background automation tool.
+- Login (manual, headed) and verification/everyday use (headless, session reuse) are split into separate scripts. Only `login.ts` ever performs interactive login; every other script must only read the saved session file.
+- `login.ts` requires a visible display, so it must be run on a local machine (or anywhere with a GUI) — not in this cloud workspace, which has no display. `verify.ts` and future automation are headless and safe to run anywhere, including here.
 
 ## Product
 
-_Describe the high-level user-facing capabilities of this app once they exist._
+- (Milestone 1, in progress) A Playwright-based automation tool that logs into Pikkit once (manually) and reuses that session going forward, verifying it's still authenticated. Future milestones will add event retrieval, betting strategies, Kalshi integration, automated trading, and a dashboard.
 
 ## User preferences
 
