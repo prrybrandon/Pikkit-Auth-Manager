@@ -1,0 +1,30 @@
+{
+  "event_id": "evt_67890",
+  "league": "NBA",
+  "sport": "Basketball",
+  "home_team": "Boston Celtics",
+  "away_team": "Denver Nuggets",
+  "start_time": "2026-07-05T00:30:00Z",
+  "moneyline": {
+    "home_odds": -110,
+    "away_odds": -110,
+    "bet_percentage": { "home": 50, "away": 50 },
+    "money_percentage": { "home": 50, "away": 50 },
+    "handle": { "home": 100000, "away": 100000 },
+    "bets": { "home": 1000, "away": 1000 }
+  },
+  "spread": {
+    "line": -1.5,
+    "bet_percentage": { "home": 50, "away": 50 },
+    "money_percentage": { "home": 50, "away": 50 },
+    "handle": { "home": 100000, "away": 100000 },
+    "bets": { "home": 1000, "away": 1000 }
+  },
+  "total": {
+    "line": 224.5,
+    "bet_percentage": { "home": 50, "away": 50 },
+    "money_percentage": { "home": 50, "away": 50 },
+    "handle": { "home": 100000, "away": 100000 },
+    "bets": { "home": 1000, "away": 1000 }
+  }
+}

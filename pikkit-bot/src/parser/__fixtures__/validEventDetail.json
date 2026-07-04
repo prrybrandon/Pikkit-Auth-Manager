@@ -1,0 +1,40 @@
+{
+  "event_id": "evt_12345",
+  "league": "NFL",
+  "sport": "Football",
+  "home_team": "Kansas City Chiefs",
+  "away_team": "Buffalo Bills",
+  "start_time": "2026-07-04T20:00:00Z",
+  "status": "scheduled",
+  "moneyline": {
+    "home_odds": -150,
+    "away_odds": 130,
+    "bet_percentage": { "home": 62, "away": 38 },
+    "money_percentage": { "home": 70, "away": 30 },
+    "handle": { "home": 700000, "away": 300000 },
+    "bets": { "home": 6200, "away": 3800 }
+  },
+  "spread": {
+    "line": -3.5,
+    "bet_percentage": { "home": 55, "away": 45 },
+    "money_percentage": { "home": 60, "away": 40 },
+    "handle": { "home": 500000, "away": 400000 },
+    "bets": { "home": 5500, "away": 4500 }
+  },
+  "total": {
+    "line": 48.5,
+    "bet_percentage": { "home": 50, "away": 50 },
+    "money_percentage": { "home": 52, "away": 48 },
+    "handle": { "home": 300000, "away": 280000 },
+    "bets": { "home": 3000, "away": 3000 }
+  },
+  "community": {
+    "pick": "home",
+    "confidence": 0.71
+  },
+  "closing_line": {
+    "moneyline": { "home_odds": -155, "away_odds": 135 },
+    "spread": { "line": -3 },
+    "total": { "line": 47.5 }
+  }
+}
