@@ -1,0 +1,589 @@
+# Pikkit Trading Bot
+Version: 1.0
+Status: Design Specification
+Author: Brandon Parry
+
+---
+
+# 1. Project Goal
+
+Build a fully automated sports market data platform that:
+
+1. Authenticates with Pikkit
+2. Collects live market data
+3. Runs custom betting strategies
+4. Places trades on Kalshi
+5. Records every trade
+6. Displays a dashboard
+
+This project must be modular.
+
+Every module should be independently testable.
+
+The application should never scrape rendered HTML if equivalent JSON endpoints exist.
+
+Always prefer authenticated API requests.
+
+---
+
+# 2. Core Design Principles
+
+## 2.1
+
+Authentication should exist in exactly one module.
+
+No other code should know how authentication works.
+
+---
+
+## 2.2
+
+Every API request should pass through a single API client.
+
+No duplicated fetch() calls.
+
+---
+
+## 2.3
+
+Strategies never communicate directly with Pikkit.
+
+Strategies only receive normalized Game objects.
+
+---
+
+## 2.4
+
+Trading never communicates directly with strategies.
+
+Strategies generate Signals.
+
+Trading consumes Signals.
+
+---
+
+## 2.5
+
+Every module should have one responsibility.
+
+---
+
+# 3. Folder Structure
+
+src/
+
+auth/
+
+api/
+
+collector/
+
+parser/
+
+strategies/
+
+scheduler/
+
+trading/
+
+dashboard/
+
+database/
+
+shared/
+
+config/
+
+types/
+
+logs/
+
+main.ts
+
+---
+
+# 4. Authentication Module
+
+Folder
+
+src/auth
+
+Files
+
+login.ts
+
+verify.ts
+
+session.ts
+
+Responsibilities
+
+Launch Playwright
+
+Authenticate with Pikkit
+
+Save authentication
+
+Refresh authentication
+
+Expose authenticated requests
+
+Authentication information must never be hardcoded.
+
+---
+
+# 5. API Module
+
+Folder
+
+src/api/pikkit
+
+Files
+
+client.ts
+
+events.ts
+
+eventDetails.ts
+
+types.ts
+
+Responsibilities
+
+Create authenticated HTTP requests
+
+Use Authorization automatically
+
+Provide reusable API functions
+
+Functions
+
+getTodaysEvents()
+
+getEventDetails(eventId)
+
+---
+
+# 6. Collector Module
+
+Folder
+
+src/collector
+
+Responsibilities
+
+Download today's events
+
+Extract Event IDs
+
+Download every event
+
+Return normalized Game objects
+
+Store raw JSON
+
+Store parsed objects
+
+No strategy logic belongs here.
+
+---
+
+# 7. Parser Module
+
+Responsibilities
+
+Convert raw JSON into strongly typed objects.
+
+Never expose raw JSON outside parser.
+
+---
+
+# 8. Game Model
+
+Every game must contain:
+
+id
+
+league
+
+sport
+
+startTime
+
+homeTeam
+
+awayTeam
+
+status
+
+moneyline
+
+spread
+
+total
+
+community
+
+closingLine
+
+---
+
+Moneyline
+
+homeOdds
+
+awayOdds
+
+betPercentages
+
+moneyPercentages
+
+handle
+
+bets
+
+---
+
+Spread
+
+line
+
+betPercentages
+
+moneyPercentages
+
+handle
+
+bets
+
+---
+
+Total
+
+line
+
+betPercentages
+
+moneyPercentages
+
+handle
+
+bets
+
+---
+
+# 9. Scheduler
+
+Responsible only for timing.
+
+Never performs business logic.
+
+Responsibilities
+
+Determine polling frequency
+
+Determine when games should refresh
+
+Queue collector jobs
+
+Future polling schedule
+
+Games > 3 hours away
+
+Every 15 minutes
+
+Games 3 hours to 30 minutes
+
+Every 5 minutes
+
+Games 30 minutes to Final
+
+Every 1 minute
+
+Final games
+
+Stop polling
+
+---
+
+# 10. Strategy Engine
+
+Folder
+
+src/strategies
+
+Every strategy must implement
+
+interface Strategy {
+
+name
+
+evaluate(game)
+
+}
+
+evaluate()
+
+returns
+
+BUY
+
+SELL
+
+IGNORE
+
+No strategy may execute trades.
+
+Strategies only produce signals.
+
+---
+
+Strategies
+
+PK85
+
+PKMisc
+
+Future strategies
+
+SharpMoney
+
+ReverseLineMovement
+
+SteamMove
+
+Custom
+
+---
+
+# 11. Signal Model
+
+Signal
+
+strategy
+
+gameId
+
+market
+
+side
+
+confidence
+
+timestamp
+
+reason
+
+---
+
+# 12. Trading Module
+
+Folder
+
+src/trading
+
+Responsibilities
+
+Receive signals
+
+Prevent duplicate trades
+
+Submit Kalshi orders
+
+Record responses
+
+Trading should support
+
+Paper Mode
+
+Live Mode
+
+Paper Mode must be default.
+
+---
+
+# 13. Database
+
+Version 1
+
+SQLite
+
+Tables
+
+games
+
+snapshots
+
+signals
+
+orders
+
+settings
+
+auth
+
+---
+
+# 14. Logging
+
+Every module should log using the same logger.
+
+Levels
+
+INFO
+
+WARN
+
+ERROR
+
+DEBUG
+
+---
+
+# 15. Dashboard
+
+Version 1 Dashboard
+
+Today's Games
+
+Current Signals
+
+Open Positions
+
+Completed Trades
+
+System Status
+
+Polling Status
+
+Authentication Status
+
+No authentication logic belongs in dashboard.
+
+---
+
+# 16. Configuration
+
+Environment Variables
+
+PIKKIT_AUTH
+
+KALSHI_API_KEY
+
+KALSHI_PRIVATE_KEY
+
+POLL_INTERVAL
+
+DATABASE_PATH
+
+LOG_LEVEL
+
+---
+
+# 17. Error Handling
+
+Every external request must retry.
+
+Retry schedule
+
+1 second
+
+2 seconds
+
+5 seconds
+
+Maximum 3 attempts
+
+Log every failure.
+
+---
+
+# 18. Milestones
+
+Milestone 1
+
+Authentication
+
+Milestone 2
+
+Pikkit API Client
+
+Milestone 3
+
+Collector
+
+Milestone 4
+
+Parser
+
+Milestone 5
+
+Scheduler
+
+Milestone 6
+
+Strategy Engine
+
+Milestone 7
+
+Dashboard
+
+Milestone 8
+
+Paper Trading
+
+Milestone 9
+
+Live Kalshi Trading
+
+---
+
+# 19. Future Features
+
+Discord alerts
+
+SMS alerts
+
+Telegram
+
+Machine Learning
+
+Historical Backtesting
+
+Performance Analytics
+
+Multiple sportsbooks
+
+Prediction Market Arbitrage
+
+Multiple users
+
+Cloud deployment
+
+---
+
+# 20. AI Development Rules
+
+These rules apply to every future coding task.
+
+Do not rewrite existing architecture.
+
+Do not rename files unless necessary.
+
+Do not duplicate logic.
+
+Prefer composition over duplication.
+
+Keep every module independent.
+
+Keep files small.
+
+Keep functions focused.
+
+Prefer interfaces over "any".
+
+Never hardcode authentication.
+
+Never scrape HTML if JSON exists.
+
+Stop after completing the requested milestone.
