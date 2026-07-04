@@ -6,7 +6,7 @@ import { PIKKIT_API_BASE_URL } from "../../config.js";
 import { pikkitApiClient } from "./client.js";
 import type { EventSummary, PikkitRawEventListItem, PikkitRawEventsResponse } from "./types.js";
 
-function todayAsQueryDate(): string {
+export function todayAsQueryDate(): string {
   const now = new Date();
   const year = now.getFullYear();
   const month = String(now.getMonth() + 1).padStart(2, "0");

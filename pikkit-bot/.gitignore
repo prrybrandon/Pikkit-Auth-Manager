@@ -1,2 +1,3 @@
 sessions/*.json
+debug/*.json
 dist
