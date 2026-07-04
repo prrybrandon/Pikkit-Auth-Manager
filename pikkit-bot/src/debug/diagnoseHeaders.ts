@@ -3,14 +3,16 @@
  *
  * Launches a real (headed by default) browser using the saved session,
  * navigates to Home, dismisses the mobile-sync modal, navigates directly
- * to /events (no sidebar click), waits for /events/all to complete,
- * clicks the first event card, logs every network request as it happens,
- * and prints full request/response details for the first /event/foryou/
- * call. This exists purely to compare what a real browser sends/receives
- * against what our API client sends/receives.
+ * to /events (no sidebar click), and waits for /events/all to complete.
+ *
+ * Instead of guessing event-card selectors and clicking, this script now
+ * performs DOM inspection: it saves the full rendered page HTML and dumps
+ * every visible, interactive-looking element (tag/class/id/role/href/
+ * aria-label/text) so the real selectors can be determined by inspection
+ * rather than trial and error.
  *
  * Does not modify any existing auth/API code. Safe to delete once the
- * mismatch is found.
+ * selectors are found.
  *
  *   pnpm --filter @workspace/pikkit-bot run diagnose-headers
  *
@@ -23,30 +25,24 @@ import { fileURLToPath } from "node:url";
 import { chromium, type Page } from "playwright";
 import { PIKKIT_HOME_URL, SESSION_FILE, isHeadless } from "../config.js";
 
-const EVENT_DETAIL_URL_SUBSTRING = "/event/foryou/";
 const EVENTS_ALL_URL_SUBSTRING = "/events/all";
+
+const SEARCH_STRINGS = ["MLB", "NBA", "NFL", "WNBA", "Moneyline", "Spread", "Over", "Under"];
+
+const CLASS_KEYWORDS = ["event", "match", "game", "card", "tile", "bet", "row"];
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, "..", "..");
 const DEBUG_DIR = path.join(projectRoot, "debug");
 
-function printHeaders(title: string, headers: Record<string, string>): void {
-  console.log(`${title}:`);
-  const entries = Object.entries(headers);
-  if (entries.length === 0) {
-    console.log("  (none)");
-    return;
-  }
-  for (const [key, value] of entries) {
-    console.log(`  ${key}: ${value}`);
-  }
-}
-
-function saveJson(filename: string, data: unknown): string {
-  fs.mkdirSync(DEBUG_DIR, { recursive: true });
-  const filePath = path.join(DEBUG_DIR, filename);
-  fs.writeFileSync(filePath, JSON.stringify(data, null, 2));
-  return filePath;
+interface DiscoveredElement {
+  tag: string;
+  className: string;
+  id: string;
+  role: string;
+  href: string;
+  ariaLabel: string;
+  text: string;
 }
 
 async function closeSyncModalIfPresent(page: Page): Promise<void> {
@@ -94,35 +90,111 @@ async function closeSyncModalIfPresent(page: Page): Promise<void> {
   console.log(`No sync modal present (attempted selectors: ${attempted.join(", ")}).`);
 }
 
-async function clickFirstEventCard(page: Page): Promise<void> {
-  const candidateSelectors = [
-    '[data-testid*="event-card" i]',
-    '[class*="event-card" i]',
-    '[class*="eventCard" i]',
-    'main [role="button"]',
-    'main a[href*="/event"]',
-    'main li',
-  ];
+async function inspectDom(page: Page): Promise<DiscoveredElement[]> {
+  return page.evaluate(() => {
+    const INTERACTIVE_TAGS = new Set([
+      "a",
+      "button",
+      "div",
+      "li",
+      "article",
+      "section",
+      "span",
+      "tr",
+      "td",
+    ]);
 
-  const attempted: string[] = [];
+    const doc = (globalThis as any).document;
+    const win = (globalThis as any).window;
 
-  for (const selector of candidateSelectors) {
-    attempted.push(selector);
-    const locator = page.locator(selector).first();
-    if (await locator.isVisible().catch(() => false)) {
-      console.log(`Found first event card via selector: ${selector}`);
-      await locator.click();
-      console.log("Clicked first event.");
-      return;
+    function isVisible(el: any): boolean {
+      const style = win.getComputedStyle(el);
+      if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0") {
+        return false;
+      }
+      const rect = el.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0;
     }
-    console.log(`Selector failed for event card: ${selector}`);
-  }
 
-  throw new Error(
-    "Could not find any event card to click. All attempted selectors failed:\n" +
-      attempted.map((selector) => `  - ${selector}`).join("\n") +
-      "\nInspect the real Events page markup and update clickFirstEventCard() in this script.",
-  );
+    function looksInteractive(el: any): boolean {
+      const tag = el.tagName.toLowerCase();
+      if (tag === "a" || tag === "button") return true;
+      const role = el.getAttribute("role");
+      if (role && ["button", "link", "listitem", "row", "option", "tab"].includes(role)) {
+        return true;
+      }
+      const style = win.getComputedStyle(el);
+      if (style.cursor === "pointer") return true;
+      if (el.hasAttribute("onclick")) return true;
+      if (el.hasAttribute("href")) return true;
+      if (INTERACTIVE_TAGS.has(tag)) return true;
+      return false;
+    }
+
+    const results: {
+      tag: string;
+      className: string;
+      id: string;
+      role: string;
+      href: string;
+      ariaLabel: string;
+      text: string;
+    }[] = [];
+
+    const allElements: any[] = Array.from(doc.querySelectorAll("body *"));
+
+    for (const el of allElements) {
+      const text = (el.textContent ?? "").trim().replace(/\s+/g, " ");
+      const href = el.getAttribute("href") ?? "";
+
+      if (!text && !href) continue;
+      if (!isVisible(el)) continue;
+      if (!looksInteractive(el)) continue;
+
+      results.push({
+        tag: el.tagName.toLowerCase(),
+        className: typeof el.className === "string" ? el.className : "",
+        id: el.id ?? "",
+        role: el.getAttribute("role") ?? "",
+        href,
+        ariaLabel: el.getAttribute("aria-label") ?? "",
+        text: text.slice(0, 80),
+      });
+    }
+
+    return results;
+  });
+}
+
+async function collectClassNamesWithKeywords(page: Page, keywords: string[]): Promise<string[]> {
+  return page.evaluate((keywordList: string[]) => {
+    const doc = (globalThis as any).document;
+    const found = new Set<string>();
+    const allElements: any[] = Array.from(doc.querySelectorAll("body *"));
+
+    for (const el of allElements) {
+      const className = typeof el.className === "string" ? el.className : "";
+      if (!className) continue;
+      for (const cls of className.split(/\s+/)) {
+        if (!cls) continue;
+        const lower = cls.toLowerCase();
+        if (keywordList.some((keyword) => lower.includes(keyword))) {
+          found.add(cls);
+        }
+      }
+    }
+
+    return Array.from(found).sort();
+  }, keywords);
+}
+
+async function searchPageTextFor(page: Page, needles: string[]): Promise<Record<string, boolean>> {
+  const bodyText = await page.evaluate(() => (globalThis as any).document.body.innerText ?? "");
+  const results: Record<string, boolean> = {};
+  for (const needle of needles) {
+    results[needle] = bodyText.includes(needle);
+  }
+  return results;
 }
 
 async function main(): Promise<void> {
@@ -137,47 +209,8 @@ async function main(): Promise<void> {
   const context = await browser.newContext({ storageState: SESSION_FILE });
   const page = await context.newPage();
 
-  let matched = false;
-
   page.on("request", (request) => {
     console.log(`${request.method()} ${request.url()}`);
-  });
-
-  page.on("response", (response) => {
-    if (matched || !response.url().includes(EVENT_DETAIL_URL_SUBSTRING)) {
-      return;
-    }
-    matched = true;
-
-    void (async () => {
-      const request = response.request();
-
-      console.log("\n=== Matched request: /event/foryou/ ===");
-      console.log(`Request URL: ${request.url()}`);
-      console.log(`Method: ${request.method()}`);
-
-      printHeaders("\nFull request headers", request.headers());
-      printHeaders("\nFull response headers", response.headers());
-
-      console.log(`\nResponse status: ${response.status()} ${response.statusText()}`);
-
-      let responseJson: unknown = null;
-      try {
-        responseJson = await response.json();
-      } catch (error) {
-        console.error("Failed to parse response body as JSON:", error);
-      }
-
-      console.log("\nResponse JSON:");
-      console.log(JSON.stringify(responseJson, null, 2));
-
-      if (responseJson !== null) {
-        const savedPath = saveJson("event.json", responseJson);
-        console.log(`\nSaved response JSON to ${savedPath}`);
-      }
-
-      console.log("\n=== End of matched request ===\n");
-    })();
   });
 
   console.log(`Navigating to ${PIKKIT_HOME_URL} ...`);
@@ -204,15 +237,56 @@ async function main(): Promise<void> {
 
   await closeSyncModalIfPresent(page);
 
-  await clickFirstEventCard(page);
+  console.log("Waiting 3 seconds for React to fully render...");
+  await page.waitForTimeout(3000);
 
-  console.log("Waiting for /event/foryou request...");
-  while (!matched) {
-    await page.waitForTimeout(500);
+  fs.mkdirSync(DEBUG_DIR, { recursive: true });
+  const htmlPath = path.join(DEBUG_DIR, "events.html");
+  await fs.promises.writeFile(htmlPath, await page.content(), "utf8");
+  console.log("Saved page HTML to debug/events.html");
+
+  console.log("\nInspecting DOM for visible, interactive-looking elements...");
+  const elements = await inspectDom(page);
+  console.log(`Discovered ${elements.length} candidate elements.`);
+
+  const toPrint = elements.slice(0, 200);
+  if (toPrint.length === 0) {
+    console.log(
+      "No interactive elements were found. Inspect debug/events.html directly to determine selectors.",
+    );
+  } else {
+    console.log(`\nPrinting first ${toPrint.length} discovered elements:\n`);
+    toPrint.forEach((el, index) => {
+      console.log(`[${index}]`);
+      console.log(`tag: ${el.tag}`);
+      console.log(`class: ${el.className}`);
+      console.log(`id: ${el.id}`);
+      console.log(`role: ${el.role}`);
+      console.log(`href: ${el.href}`);
+      console.log(`aria-label: ${el.ariaLabel}`);
+      console.log(`text: ${el.text}`);
+      console.log("");
+    });
+  }
+
+  console.log("\nUnique class names matching keywords (event, match, game, card, tile, bet, row):");
+  const matchingClassNames = await collectClassNamesWithKeywords(page, CLASS_KEYWORDS);
+  if (matchingClassNames.length === 0) {
+    console.log("  (none found)");
+  } else {
+    for (const className of matchingClassNames) {
+      console.log(`  - ${className}`);
+    }
+  }
+
+  console.log("\nSearching page text for known strings:");
+  const searchResults = await searchPageTextFor(page, SEARCH_STRINGS);
+  for (const [needle, found] of Object.entries(searchResults)) {
+    console.log(`  ${needle}: ${found ? "found" : "not found"}`);
   }
 
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-  await rl.question("Press Enter to close the browser and exit...");
+  await rl.question("\nPress Enter to close the browser and exit...");
   rl.close();
 
   await browser.close();
