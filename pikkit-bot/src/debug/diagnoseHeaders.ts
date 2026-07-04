@@ -2,11 +2,11 @@
  * TEMPORARY diagnostic script — not part of the production pipeline.
  *
  * Launches a real (headed by default) browser using the saved session,
- * navigates the Pikkit UI exactly as a user would (Home -> Events ->
- * first event card), and prints the request/response details for the
- * resulting /event/foryou/{eventId} call. This exists purely to compare
- * what a real browser sends/receives against what our API client
- * sends/receives.
+ * navigates the Pikkit UI exactly as a user would (Home -> dismiss modal
+ * -> Events -> first event card), logs every network request as it
+ * happens, and prints full request/response details for the first
+ * /event/foryou/ call. This exists purely to compare what a real browser
+ * sends/receives against what our API client sends/receives.
  *
  * Does not modify any existing auth/API code. Safe to delete once the
  * mismatch is found.
@@ -19,37 +19,35 @@ import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline/promises";
 import { fileURLToPath } from "node:url";
-import { chromium, type Page, type Response } from "playwright";
+import { chromium, type Page } from "playwright";
 import { PIKKIT_HOME_URL, SESSION_FILE, isHeadless } from "../config.js";
 
-const REDACT_VALUE_LENGTH_THRESHOLD = 20;
-const EVENT_DETAIL_URL_PATTERN = /\/event\/foryou\/[^/?#]+/;
+const EVENT_DETAIL_URL_SUBSTRING = "/event/foryou/";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, "..", "..");
 const DEBUG_DIR = path.join(projectRoot, "debug");
 
-function redactValue(value: string): string {
-  if (value.length <= REDACT_VALUE_LENGTH_THRESHOLD) {
-    return value;
-  }
-  return `${value.slice(0, 8)}...<redacted ${value.length} chars total>`;
-}
-
-function printHeaderGroup(title: string, entries: [string, string][]): void {
-  console.log(`  ${title}:`);
+function printHeaders(title: string, headers: Record<string, string>): void {
+  console.log(`${title}:`);
+  const entries = Object.entries(headers);
   if (entries.length === 0) {
-    console.log("    (none)");
+    console.log("  (none)");
     return;
   }
   for (const [key, value] of entries) {
-    console.log(`    ${key}: ${redactValue(value)}`);
+    console.log(`  ${key}: ${value}`);
   }
 }
 
-async function dismissMobileSyncModalIfPresent(page: Page): Promise<void> {
-  // The modal's exact markup isn't known ahead of time, so try a few
-  // reasonably specific strategies rather than guessing a single selector.
+function saveJson(filename: string, data: unknown): string {
+  fs.mkdirSync(DEBUG_DIR, { recursive: true });
+  const filePath = path.join(DEBUG_DIR, filename);
+  fs.writeFileSync(filePath, JSON.stringify(data, null, 2));
+  return filePath;
+}
+
+async function closeSyncModalIfPresent(page: Page): Promise<void> {
   const candidateSelectors = [
     'text="Syncing only available on mobile app"',
     '[role="dialog"] button[aria-label="Close" i]',
@@ -68,21 +66,20 @@ async function dismissMobileSyncModalIfPresent(page: Page): Promise<void> {
         .locator('[role="dialog"] button[aria-label="Close" i], [role="dialog"] button:has-text("×")')
         .first();
       if (await closeButton.isVisible().catch(() => false)) {
-        console.log('Dismissing "Syncing only available on mobile app" modal...');
         await closeButton.click();
+        console.log("Closed sync modal.");
         return;
       }
       continue;
     }
 
-    console.log("Dismissing modal via close button...");
     await locator.click();
+    console.log("Closed sync modal.");
     return;
   }
 }
 
-async function clickEventsSidebarLink(page: Page): Promise<void> {
-  console.log('Clicking "Events" in the sidebar...');
+async function clickEventsSidebarItem(page: Page): Promise<void> {
   const candidateSelectors = [
     'nav a:has-text("Events")',
     'aside a:has-text("Events")',
@@ -97,26 +94,18 @@ async function clickEventsSidebarLink(page: Page): Promise<void> {
     const locator = page.locator(selector).first();
     if (await locator.isVisible().catch(() => false)) {
       await locator.click();
+      console.log("Clicked Events.");
       return;
     }
   }
 
   throw new Error(
     'Could not find an "Events" sidebar item to click with any of the known selectors. ' +
-      "Inspect the real sidebar markup and update clickEventsSidebarLink() in this script.",
+      "Inspect the real sidebar markup and update clickEventsSidebarItem() in this script.",
   );
 }
 
-async function verifyOnEventsPage(page: Page): Promise<void> {
-  const url = page.url();
-  if (!url.includes("/events") && !url.toLowerCase().includes("event")) {
-    throw new Error(`Expected to be on the Events page after clicking, but URL is: ${url}`);
-  }
-  console.log(`Confirmed on Events page: ${url}`);
-}
-
 async function clickFirstEventCard(page: Page): Promise<void> {
-  console.log("Clicking the first event card...");
   const candidateSelectors = [
     '[data-testid*="event-card" i]',
     '[class*="event-card" i]',
@@ -130,6 +119,7 @@ async function clickFirstEventCard(page: Page): Promise<void> {
     const locator = page.locator(selector).first();
     if (await locator.isVisible().catch(() => false)) {
       await locator.click();
+      console.log("Clicked first event.");
       return;
     }
   }
@@ -138,13 +128,6 @@ async function clickFirstEventCard(page: Page): Promise<void> {
     "Could not find any event card to click with any of the known selectors. " +
       "Inspect the real Events page markup and update clickFirstEventCard() in this script.",
   );
-}
-
-function saveJson(filename: string, data: unknown): string {
-  fs.mkdirSync(DEBUG_DIR, { recursive: true });
-  const filePath = path.join(DEBUG_DIR, filename);
-  fs.writeFileSync(filePath, JSON.stringify(data, null, 2));
-  return filePath;
 }
 
 async function main(): Promise<void> {
@@ -158,65 +141,72 @@ async function main(): Promise<void> {
   const context = await browser.newContext({ storageState: SESSION_FILE });
   const page = await context.newPage();
 
-  const responsePromise = new Promise<Response>((resolve) => {
-    page.on("response", (response) => {
-      if (EVENT_DETAIL_URL_PATTERN.test(response.url())) {
-        resolve(response);
+  let matched = false;
+
+  page.on("request", (request) => {
+    console.log(`${request.method()} ${request.url()}`);
+  });
+
+  page.on("response", (response) => {
+    if (matched || !response.url().includes(EVENT_DETAIL_URL_SUBSTRING)) {
+      return;
+    }
+    matched = true;
+
+    void (async () => {
+      const request = response.request();
+
+      console.log("\n=== Matched request: /event/foryou/ ===");
+      console.log(`Request URL: ${request.url()}`);
+      console.log(`Method: ${request.method()}`);
+
+      printHeaders("\nFull request headers", request.headers());
+      printHeaders("\nFull response headers", response.headers());
+
+      console.log(`\nResponse status: ${response.status()} ${response.statusText()}`);
+
+      let responseJson: unknown = null;
+      try {
+        responseJson = await response.json();
+      } catch (error) {
+        console.error("Failed to parse response body as JSON:", error);
       }
-    });
+
+      console.log("\nResponse JSON:");
+      console.log(JSON.stringify(responseJson, null, 2));
+
+      if (responseJson !== null) {
+        const savedPath = saveJson("event.json", responseJson);
+        console.log(`\nSaved response JSON to ${savedPath}`);
+      }
+
+      console.log("\n=== End of matched request ===\n");
+    })();
   });
 
   console.log(`Navigating to ${PIKKIT_HOME_URL} ...`);
   await page.goto(PIKKIT_HOME_URL, { waitUntil: "load" });
+  console.log("Page fully loaded.");
 
   await page.waitForTimeout(1500);
-  await dismissMobileSyncModalIfPresent(page);
+  await closeSyncModalIfPresent(page);
   await page.waitForLoadState("networkidle").catch(() => {});
-  await dismissMobileSyncModalIfPresent(page);
+  await closeSyncModalIfPresent(page);
 
-  await clickEventsSidebarLink(page);
+  await clickEventsSidebarItem(page);
 
   await page.waitForTimeout(1000);
-  await dismissMobileSyncModalIfPresent(page);
+  await closeSyncModalIfPresent(page);
   await page.waitForLoadState("networkidle").catch(() => {});
-  await dismissMobileSyncModalIfPresent(page);
-
-  await verifyOnEventsPage(page);
+  await closeSyncModalIfPresent(page);
+  console.log("Events page loaded.");
 
   await clickFirstEventCard(page);
 
-  console.log("Waiting for the /event/foryou/{eventId} request/response (no timeout)...");
-  const response = await responsePromise;
-  const request = response.request();
-
-  const headerEntries = Object.entries(request.headers());
-
-  console.log("\n=== Matched request: /event/foryou/{eventId} ===");
-  console.log(`Request URL: ${request.url()}`);
-  console.log(`Method: ${request.method()}`);
-
-  console.log("\nRequest headers:");
-  printHeaderGroup("headers", headerEntries.map(([k, v]) => [k, v] as [string, string]));
-
-  console.log(`\nResponse status: ${response.status()} ${response.statusText()}`);
-
-  let responseJson: unknown;
-  try {
-    responseJson = await response.json();
-  } catch (error) {
-    console.error("Failed to parse response body as JSON:", error);
-    responseJson = null;
+  console.log("Listening for network requests (no timeout)...");
+  while (!matched) {
+    await page.waitForTimeout(500);
   }
-
-  console.log("\nResponse JSON:");
-  console.log(JSON.stringify(responseJson, null, 2));
-
-  if (responseJson !== null) {
-    const savedPath = saveJson("event.json", responseJson);
-    console.log(`\nSaved response JSON to ${savedPath}`);
-  }
-
-  console.log("\n=== End of matched request ===\n");
 
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
   await rl.question("Press Enter to close the browser and exit...");
