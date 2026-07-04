@@ -2,11 +2,12 @@
  * TEMPORARY diagnostic script — not part of the production pipeline.
  *
  * Launches a real (headed by default) browser using the saved session,
- * navigates the Pikkit UI exactly as a user would (Home -> dismiss modal
- * -> Events -> first event card), logs every network request as it
- * happens, and prints full request/response details for the first
- * /event/foryou/ call. This exists purely to compare what a real browser
- * sends/receives against what our API client sends/receives.
+ * navigates to Home, dismisses the mobile-sync modal, navigates directly
+ * to /events (no sidebar click), waits for /events/all to complete,
+ * clicks the first event card, logs every network request as it happens,
+ * and prints full request/response details for the first /event/foryou/
+ * call. This exists purely to compare what a real browser sends/receives
+ * against what our API client sends/receives.
  *
  * Does not modify any existing auth/API code. Safe to delete once the
  * mismatch is found.
@@ -23,6 +24,7 @@ import { chromium, type Page } from "playwright";
 import { PIKKIT_HOME_URL, SESSION_FILE, isHeadless } from "../config.js";
 
 const EVENT_DETAIL_URL_SUBSTRING = "/event/foryou/";
+const EVENTS_ALL_URL_SUBSTRING = "/events/all";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, "..", "..");
@@ -90,38 +92,6 @@ async function closeSyncModalIfPresent(page: Page): Promise<void> {
   // function (it's called defensively at several points), so this is
   // informational, not an error.
   console.log(`No sync modal present (attempted selectors: ${attempted.join(", ")}).`);
-}
-
-async function clickEventsSidebarItem(page: Page): Promise<void> {
-  const candidateSelectors = [
-    'nav a:has-text("Events")',
-    'aside a:has-text("Events")',
-    '[role="navigation"] a:has-text("Events")',
-    'a:has-text("Events")',
-    'nav button:has-text("Events")',
-    'aside button:has-text("Events")',
-    'button:has-text("Events")',
-  ];
-
-  const attempted: string[] = [];
-
-  for (const selector of candidateSelectors) {
-    attempted.push(selector);
-    const locator = page.locator(selector).first();
-    if (await locator.isVisible().catch(() => false)) {
-      console.log(`Found "Events" sidebar item via selector: ${selector}`);
-      await locator.click();
-      console.log("Clicked Events.");
-      return;
-    }
-    console.log(`Selector failed for "Events" sidebar item: ${selector}`);
-  }
-
-  throw new Error(
-    'Could not find an "Events" sidebar item to click. All attempted selectors failed:\n' +
-      attempted.map((selector) => `  - ${selector}`).join("\n") +
-      "\nInspect the real sidebar markup and update clickEventsSidebarItem() in this script.",
-  );
 }
 
 async function clickFirstEventCard(page: Page): Promise<void> {
@@ -219,13 +189,20 @@ async function main(): Promise<void> {
   await page.waitForLoadState("networkidle").catch(() => {});
   await closeSyncModalIfPresent(page);
 
-  await clickEventsSidebarItem(page);
+  const eventsUrl = new URL("events", PIKKIT_HOME_URL).toString();
+  const eventsAllResponsePromise = page.waitForResponse(
+    (response) => response.url().includes(EVENTS_ALL_URL_SUBSTRING),
+    { timeout: 0 },
+  );
 
-  await page.waitForTimeout(1000);
+  console.log(`Navigating directly to ${eventsUrl} ...`);
+  await page.goto(eventsUrl, { waitUntil: "load" });
+  console.log("Navigated directly to Events page.");
+
+  await eventsAllResponsePromise;
+  console.log("Events loaded.");
+
   await closeSyncModalIfPresent(page);
-  await page.waitForLoadState("networkidle").catch(() => {});
-  await closeSyncModalIfPresent(page);
-  console.log("Events page loaded.");
 
   await clickFirstEventCard(page);
 
